@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 """multiwii.py: Handles Multiwii Serial Protocol."""
+"""modified version by mohammad.hefny@gmail.com"""
 
 __author__ = "Aldo Vargas"
 __copyright__ = "Copyright 2014 Aldux.net"
@@ -52,6 +53,7 @@ class MultiWii:
     SET_WP = 209
     SWITCH_RC_SERIAL = 210
     IS_SERIAL = 211
+    EEPROM_WRITE = 250
     DEBUG = 254
 
 
@@ -59,6 +61,17 @@ class MultiWii:
     def __init__(self, serPort):
 
         """Global variables of data"""
+        self.pidROLL  = {'P':0,'I':0,'D':0}
+        self.pidPITCH = {'P':0,'I':0,'D':0}
+        self.pidYAW   = {'P':0,'I':0,'D':0}
+        self.pidALT   = {'P':0,'I':0,'D':0}
+        self.pidPOS   = {'P':0,'I':0,'D':0}
+        self.pidPOSR  = {'P':0,'I':0,'D':0}
+        self.pidNAVR  = {'P':0,'I':0,'D':0}
+        self.pidLEVEL = {'P':0,'I':0,'D':0}
+        self.pidLMAG  = {'P':0,'I':0,'D':0}
+        self.pidVEL   = {'P':0,'I':0,'D':0}
+
         self.rcChannels = {'roll':0,'pitch':0,'yaw':0,'throttle':0,'elapsed':0,'timestamp':0}
         self.rawIMU = {'ax':0,'ay':0,'az':0,'gx':0,'gy':0,'gz':0,'elapsed':0,'timestamp':0}
         self.attitude = {'angx':0,'angy':0,'heading':0,'elapsed':0,'timestamp':0}
@@ -74,13 +87,13 @@ class MultiWii:
         self.ser.bytesize = serial.EIGHTBITS
         self.ser.parity = serial.PARITY_NONE
         self.ser.stopbits = serial.STOPBITS_ONE
-        self.ser.timeout = 0
+        self.ser.timeout = 90  #You need to allow some delay if you need to use Bluetooth connection
         self.ser.xonxoff = False
         self.ser.rtscts = False
         self.ser.dsrdtr = False
-        self.ser.writeTimeout = 2
+        self.ser.writeTimeout = 90   #Again some delay for Bluetooth
         """Time to wait until the board becames operational"""
-        wakeup = 12
+        wakeup = 3   #12 is tooo long
         try:
             self.ser.open()
             if self.PRINT:
@@ -95,6 +108,7 @@ class MultiWii:
             print "\n\nError opening "+self.ser.port+" port.\n"+str(error)+"\n\n"
 
     """Function for sending a command to the board"""
+    """Commands can contain Data"""
     def sendCMD(self, data_length, code, data):
         checksum = 0
         total_data = ['$', 'M', '<', data_length, code] + data
@@ -104,10 +118,53 @@ class MultiWii:
         try:
             b = None
             b = self.ser.write(struct.pack('<3c2B%dhB' % len(data), *total_data))
+            if (data_length!=0):
+				while True:
+					header = self.ser.read()
+					if header == '$':
+						header = header+self.ser.read(2)
+						print header
+						break
+            self.ser.flushInput()
+            self.ser.flushOutput()
         except Exception, error:
             #print "\n\nError in sendCMD."
             #print "("+str(error)+")\n\n"
             pass
+
+
+	"""Function for sending a command to the board"""
+    def sendCMD2(self, data_length, code, data):
+		checksum = 0
+		total_data = ['$', 'M', '<', data_length, code] + data
+		for i in struct.pack('<2B%db' % len(data), *total_data[3:len(total_data)]):
+			checksum = checksum ^ ord(i)
+		total_data.append(checksum)
+		#print total_data
+		try:
+			b = None
+			b = self.ser.write(struct.pack('<3c2B%dBB' % len(data), *total_data))
+			#Ignore Reply AKN
+			time.sleep(0.1)
+
+			if (data_length!=0):
+				while True:
+					header = self.ser.read()
+					if header == '$':
+						header = header+self.ser.read(2)
+						print header
+						break
+			self.ser.flushInput()
+			self.ser.flushOutput()
+			
+			
+		except Exception, error:
+			print "\n\nError in sendCMD."
+			print "("+str(error)+")\n\n"
+			pass
+
+
+
 
     """Function for sending a command to the board and receive attitude"""
     """
@@ -184,7 +241,26 @@ class MultiWii:
             timer = timer + (time.time() - start)
             start =  time.time()
 
-    """Function to receive a data packet from the board"""
+  
+    def setPIDData(self,Roll_P,Roll_I,Roll_D):
+        try:
+            t=self.getData(MultiWii.PID)
+            lst = list(t)
+            lst[0] =   Roll_P
+            lst[1] =   Roll_I
+            lst[2] =   Roll_D
+            self.sendCMD2(30,self.SET_PID,lst)
+           
+            
+        except Exception, error:
+            print error
+            pass
+	
+	def saveEEPROM (self):
+		self.sendCMD(0,self.EEPROM_WRITE,[])
+		
+	
+	"""Function to receive a data packet from the board"""
     def getData(self, cmd):
         try:
             start = time.time()
@@ -208,6 +284,46 @@ class MultiWii:
                 self.attitude['elapsed']=round(elapsed,3)
                 self.attitude['timestamp']="%0.2f" % (time.time(),) 
                 return self.attitude
+            elif cmd == self.BOXNAMES:
+				return  data
+					
+            elif cmd == self.PIDNAMES:
+				return  data
+					
+            elif cmd == self.PID:
+				
+				temp = struct.unpack('<'+'B'*(datalength),data)
+				self.pidROLL['P']=temp[0]
+				self.pidROLL['I']=temp[1]
+				self.pidROLL['D']=temp[2]
+				self.pidPITCH['P']=temp[3]
+				self.pidPITCH['I']=temp[4]
+				self.pidPITCH['D']=temp[5]
+				self.pidYAW['P']=temp[6]
+				self.pidYAW['I']=temp[7]
+				self.pidYAW['D']=temp[8]
+				self.pidALT['P']=temp[9]
+				self.pidALT['I']=temp[10]
+				self.pidALT['D']=temp[11]
+				self.pidPOS['P']=temp[12]
+				self.pidPOS['I']=temp[13]
+				self.pidPOS['D']=temp[14]
+				self.pidPOSR['P']=temp[15]
+				self.pidPOSR['I']=temp[16]
+				self.pidPOSR['D']=temp[17]
+				self.pidNAVR['P']=temp[18]
+				self.pidNAVR['I']=temp[19]
+				self.pidNAVR['D']=temp[20]
+				self.pidLEVEL['P']=temp[21]
+				self.pidLEVEL['I']=temp[22]
+				self.pidLEVEL['D']=temp[23]
+				self.pidLMAG['P']=temp[24]
+				self.pidLMAG['I']=temp[25]
+				self.pidLMAG['D']=temp[26]
+				self.pidVEL['P']=temp[27]
+				self.pidVEL['I']=temp[28]
+				self.pidVEL['D']=temp[29]
+				return temp
             elif cmd == MultiWii.RC:
                 self.rcChannels['roll']=temp[0]
                 self.rcChannels['pitch']=temp[1]
@@ -256,6 +372,8 @@ class MultiWii:
                     self.attitude['heading']=float(temp[2])
                     self.attitude['elapsed']="%0.3f" % (elapsed,)
                     self.attitude['timestamp']="%0.2f" % (time.time(),)
+                elif cmd == Multiwii.BOXNAMES:
+					print temp
                 elif cmd == MultiWii.RC:
                     self.rcChannels['roll']=temp[0]
                     self.rcChannels['pitch']=temp[1]
